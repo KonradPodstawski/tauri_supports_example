@@ -24,7 +24,7 @@ A web application demonstrating random number generation using three different m
 1. Clone repository:
 ```bash
 git clone https://github.com/KonradPodstawski/tauri_supports_example.git
-cd random-number-generator
+cd tauri_supports_example
 ```
 
 2. Install dependencies:
