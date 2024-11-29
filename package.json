@@ -1,0 +1,16 @@
+{
+  "name": "tauri_supports_example",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build-wasm": "rustc --target wasm32-unknown-unknown -O --crate-type=cdylib src/random.rs -o public/random.wasm"
+  },
+  "author": "",
+  "license": "ISC",
+  "keywords": [],
+  "description": "",
+  "dependencies": {
+    "express": "^4.21.1"
+  }
+}

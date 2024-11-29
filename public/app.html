@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="google" content="notranslate" />
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+    <meta name="viewport"
+        content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0" />
+    <title>Multi-Source Random Generator</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>Random Number Generator</h1>
+
+        <div id="results">
+            <div class="result-box">
+                <h2>SharedArrayBuffer</h2>
+                <div class="value" id="shared-result">-</div>
+                <div class="history" id="shared-history"></div>
+            </div>
+
+            <div class="result-box">
+                <h2>WebGPU</h2>
+                <div class="value" id="webgpu-result">-</div>
+                <div class="history" id="webgpu-history"></div>
+            </div>
+
+            <div class="result-box">
+                <h2>WASM</h2>
+                <div class="value" id="wasm-result">-</div>
+                <div class="history" id="wasm-history"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // SharedArrayBuffer setup
+        const sharedBuffer = new SharedArrayBuffer(4);
+        const sharedArray = new Int32Array(sharedBuffer);
+
+        // WASM initialization
+        let wasmInstance = null;
+        WebAssembly.instantiateStreaming(fetch('/random.wasm'))
+            .then(obj => {
+                wasmInstance = obj.instance;
+                generateAndSendAll();
+            })
+            .catch(err => console.error('Failed to load WASM:', err));
+
+            async function initWebGPU() {
+            if (!navigator.gpu) {
+                throw new Error('WebGPU not supported');
+            }
+
+            const adapter = await navigator.gpu.requestAdapter();
+            const device = await adapter.requestDevice();
+
+            // Create a buffer to store the current time
+            const timeBuffer = device.createBuffer({
+                size: 4,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                mappedAtCreation: true,
+            });
+            new Uint32Array(timeBuffer.getMappedRange())[0] = Date.now();
+            timeBuffer.unmap();
+
+            const shaderModule = device.createShaderModule({
+                code: `
+                    @group(0) @binding(0) var<uniform> time: u32;
+                    @group(0) @binding(1) var<storage, read_write> output: array<u32>;
+
+                    fn wang_hash(seed: u32) -> u32 {
+                        var x = seed;
+                        x = (x ^ 61u) ^ (x >> 16u);
+                        x *= 9u;
+                        x = x ^ (x >> 4u);
+                        x *= 0x27d4eb2du;
+                        x = x ^ (x >> 15u);
+                        return x;
+                    }
+
+                    @compute @workgroup_size(1)
+                    fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
+                        let hash = wang_hash(time + global_id.x);
+                        output[0] = hash % 1000u;  // Convert to range 0-999
+                    }
+                `
+            });
+
+            const outputBuffer = device.createBuffer({
+                size: 4,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+            });
+
+            const bindGroupLayout = device.createBindGroupLayout({
+                entries: [
+                    {
+                        binding: 0,
+                        visibility: GPUShaderStage.COMPUTE,
+                        buffer: { type: 'uniform' }
+                    },
+                    {
+                        binding: 1,
+                        visibility: GPUShaderStage.COMPUTE,
+                        buffer: { type: 'storage' }
+                    }
+                ]
+            });
+
+            const pipeline = device.createComputePipeline({
+                layout: device.createPipelineLayout({
+                    bindGroupLayouts: [bindGroupLayout]
+                }),
+                compute: {
+                    module: shaderModule,
+                    entryPoint: 'main'
+                }
+            });
+
+            const bindGroup = device.createBindGroup({
+                layout: bindGroupLayout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: timeBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: outputBuffer }
+                    }
+                ]
+            });
+
+            const commandEncoder = device.createCommandEncoder();
+            const passEncoder = commandEncoder.beginComputePass();
+            passEncoder.setPipeline(pipeline);
+            passEncoder.setBindGroup(0, bindGroup);
+            passEncoder.dispatchWorkgroups(1);
+            passEncoder.end();
+
+            const resultBuffer = device.createBuffer({
+                size: 4,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+            });
+
+            commandEncoder.copyBufferToBuffer(outputBuffer, 0, resultBuffer, 0, 4);
+            device.queue.submit([commandEncoder.finish()]);
+
+            await resultBuffer.mapAsync(GPUMapMode.READ);
+            const result = new Uint32Array(resultBuffer.getMappedRange())[0];
+            resultBuffer.unmap();
+
+            return result;
+        }
+       
+        async function sendToServer(source, number) {
+            try {
+                await fetch(`/numbers/${source}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        value: number
+                    })
+                });
+            } catch (error) {
+                console.error(`Error sending ${source} number:`, error);
+            }
+        }
+
+        async function updateHistory(source) {
+            try {
+                const response = await fetch(`/numbers/${source}`);
+                const data = await response.json();
+                const historyElement = document.getElementById(`${source}-history`);
+                historyElement.innerHTML = data
+                    .slice(-5)
+                    .map(item => `<div>${item.value}</div>`)
+                    .join('');
+            } catch (error) {
+                console.error(`Error updating ${source} history:`, error);
+            }
+        }
+
+        async function generateAndSendShared() {
+            const number = Math.floor(Math.random() * 1000);
+            Atomics.store(sharedArray, 0, number);
+            await sendToServer('shared', number);
+            document.getElementById('shared-result').textContent = number;
+            await updateHistory('shared');
+        }
+        
+        async function generateAndSendWebGPU() {
+            try {
+                const number = await initWebGPU();
+                await sendToServer('webgpu', number);
+                document.getElementById('webgpu-result').textContent = number;
+                await updateHistory('webgpu');
+            } catch (error) {
+                console.error('WebGPU error:', error);
+            }
+        }
+
+        async function generateAndSendWasm() {
+            if (wasmInstance) {
+                try {
+                    // Generate random seed using JavaScript
+                    const seed = Math.floor(Math.random() * 0xFFFFFFFF); // 32-bit integer
+
+                    // Call WASM function with seed
+                    const number = wasmInstance.exports.generate_wasm_random(seed);
+
+                    // Ensure positive number in range 0-999
+                    const finalNumber = Math.abs(number % 1000);
+
+                    await sendToServer('wasm', finalNumber);
+                    document.getElementById('wasm-result').textContent = finalNumber;
+                    await updateHistory('wasm');
+                } catch (error) {
+                    console.error('WASM error:', error);
+                }
+            }
+        }
+
+        async function generateAndSendAll() {
+            await Promise.all([
+                generateAndSendShared(),
+                generateAndSendWebGPU(),
+                generateAndSendWasm()
+            ]);
+        }
+
+        // Generate new numbers every 5 seconds
+        setInterval(generateAndSendAll, 5000);
+    </script>
+</body>
+
+</html>
