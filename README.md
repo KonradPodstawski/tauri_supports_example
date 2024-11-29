@@ -23,7 +23,7 @@ A web application demonstrating random number generation using three different m
 
 1. Clone repository:
 ```bash
-git clone [[repository-url]](https://github.com/KonradPodstawski/tauri_supports_example.git)
+git clone https://github.com/KonradPodstawski/tauri_supports_example.git
 cd random-number-generator
 ```
 
